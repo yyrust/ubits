@@ -5,6 +5,7 @@
 #include <climits>
 #include <cstdlib>
 #include <cstring>
+#include <stdint.h>
 
 namespace ubits {
 

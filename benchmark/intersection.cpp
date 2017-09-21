@@ -1,9 +1,11 @@
 #include <algorithm>
+#include <vector>
 #include <random>
 #include <chrono>
 #include <cassert>
-#include <inttypes.h>
 #include <smmintrin.h>
+#define __STDC_FORMAT_MACROS
+#include <inttypes.h>
 
 typedef uint32_t DocId;
 typedef std::vector<DocId> PostingList;
