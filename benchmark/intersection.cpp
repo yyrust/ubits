@@ -42,58 +42,6 @@ static void linearIntersection(PostingList const &L1, PostingList const &L2, Pos
     }
 }
 
-static DocId bseek(PostingList const &list, size_t &start, const DocId id)
-{
-    size_t lo = start, hi = list.size();
-    while (lo < hi) {
-        const size_t mid = (hi - lo)/2 + lo;
-        const DocId v = list[mid];
-        if (id == v) {
-            start = mid;
-            return id;
-        }
-        else if (id < v) {
-            hi = mid;
-        }
-        else {
-            lo = mid + 1;
-        }
-    }
-    start = lo;
-    if (lo == list.size()) {
-        return kInvalidDocId;
-    }
-    else {
-        return list[lo];
-    }
-}
-
-static DocId bseek(PostingList const &list, size_t &start, size_t end, const DocId id)
-{
-    size_t lo = start, hi = end;
-    while (lo < hi) {
-        const size_t mid = (hi - lo)/2 + lo;
-        const DocId v = list[mid];
-        if (id == v) {
-            start = mid;
-            return id;
-        }
-        else if (id < v) {
-            hi = mid;
-        }
-        else {
-            lo = mid + 1;
-        }
-    }
-    start = lo;
-    if (lo == list.size()) {
-        return kInvalidDocId;
-    }
-    else {
-        return list[lo];
-    }
-}
-
 struct BinarySeek
 {
     static DocId seek(PostingList const &list, size_t &start, size_t end, const DocId id)
@@ -173,27 +121,6 @@ struct SimpleBinarySeek
     }
 };
 
-static DocId simple_bseek(PostingList const &list, size_t &start, size_t end, const DocId id)
-{
-    const DocId *first = list.data() + start;
-    const DocId *low = first;
-    size_t n = end - start;
-    size_t half;
-    while ((half = n / 2) > 0) {
-        const DocId *mid = low + half;
-        low = (*mid < id) ? mid : low;
-        n -= half;
-    }
-    start = low - list.data();
-    if (start == list.size()) {
-        return kInvalidDocId;
-    }
-    else {
-        ++start;
-        return *(low+1);
-    }
-}
-
 template<typename FallbackSeek>
 struct GallopingSeek
 {
@@ -235,44 +162,6 @@ struct GallopingSeek
     }
 };
 
-static DocId galloping_seek(PostingList const &list, size_t &start, const DocId id)
-{
-    size_t index = start;
-    size_t size = list.size();
-    assert(index < size);
-    if (list.back() < id) {
-        start = size;
-        return kInvalidDocId;
-    }
-    if (list[index] >= id) {
-        start = index;
-        return list[index];
-    }
-    size_t prev = start;
-    size_t step = 1;
-    while (index < size) {
-        DocId value = list[index];
-        if (value == id) {
-            start = index;
-            return id;
-        }
-        if (value > id) {
-            break;
-        }
-        prev = index;
-        index += step;
-        step *= 2;
-    }
-    // invariant: list[prev] < id
-    // invariant: list[index] > id
-    if (index >= size) {
-        index = size - 1;
-    }
-    start = prev;
-    //return simple_bseek(list, start, index + 1, id);
-    return bseek(list, start, index + 1, id);
-}
-
 /**
  *  \tparam Seek1 algorithm used to seek doc id in the 1st list
  *  \tparam Seek2 algorithm used to seek doc id in the 2nd list
@@ -301,48 +190,6 @@ struct GallopingIntersection
     }
 };
 
-// use binary search for L1, galloping search for L2
-static void gallopingIntersection(PostingList const &L1, PostingList const &L2, PostingList &out)
-{
-    size_t i1 = 0;
-    size_t i2 = 0;
-    size_t size1 = L1.size();
-    while (i1 < size1) {
-        DocId id = L1[i1];
-        DocId id2 = galloping_seek(L2, i2, id);
-        if (id2 == kInvalidDocId)
-            return;
-        if (id != id2)
-            id = bseek(L1, i1, id2);
-        if (id == id2) {
-            out.push_back(id);
-            ++i1;
-            ++i2;
-        }
-    }
-}
-
-// use galloping search for both L1 and L2
-static void gallopingIntersection2(PostingList const &L1, PostingList const &L2, PostingList &out)
-{
-    size_t i1 = 0;
-    size_t i2 = 0;
-    size_t size1 = L1.size();
-    while (i1 < size1) {
-        DocId id = L1[i1];
-        DocId id2 = galloping_seek(L2, i2, id);
-        if (id2 == kInvalidDocId)
-            return;
-        if (id != id2)
-            id = galloping_seek(L1, i1, id2);
-        if (id == id2) {
-            out.push_back(id);
-            ++i1;
-            ++i2;
-        }
-    }
-}
-
 static void binarySearchIntersection(PostingList const &L1, PostingList const &L2, PostingList &out)
 {
     size_t i1 = 0;
@@ -350,11 +197,11 @@ static void binarySearchIntersection(PostingList const &L1, PostingList const &L
     size_t size1 = L1.size();
     while (i1 < size1) {
         DocId id = L1[i1];
-        DocId id2 = bseek(L2, i2, id);
+        DocId id2 = BinarySeek::seek(L2, i2, id);
         if (id2 == kInvalidDocId)
             return;
         if (id != id2)
-            id = bseek(L1, i1, id2);
+            id = BinarySeek::seek(L1, i1, id2);
         if (id == id2) {
             out.push_back(id);
             ++i1;
