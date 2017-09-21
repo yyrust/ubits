@@ -312,5 +312,42 @@ int main(int argc, char *argv[])
     benchmark("gallop3", posting_2, posting_1, out, gallopingIntersection3);
     printf("--------\n");
     benchmark("simdV1", posting_2, posting_1, out, simdIntersectionV1);
+
+    posting_1.clear();
+    posting_2.clear();
+    generateList(kMaxId, 10001, posting_1);
+    generateList(kMaxId, 10000, posting_2);
+    printf("\n[similar length 10^4]\n");
+    printf("========\n");
+    benchmark("linear", posting_1, posting_2, out, linearIntersection);
+    printf("--------\n");
+    benchmark("binary", posting_1, posting_2, out, binarySearchIntersection);
+    printf("--------\n");
+    benchmark("gallop", posting_1, posting_2, out, gallopingIntersection);
+    printf("--------\n");
+    benchmark("gallop2", posting_1, posting_2, out, gallopingIntersection2);
+    printf("--------\n");
+    benchmark("gallop3", posting_1, posting_2, out, gallopingIntersection3);
+    printf("--------\n");
+    benchmark("simdV1", posting_1, posting_2, out, simdIntersectionV1);
+
+    posting_1.clear();
+    posting_2.clear();
+    generateList(kMaxId, 100001, posting_1);
+    generateList(kMaxId, 100000, posting_2);
+    printf("\n[similar length 10^5]\n");
+    printf("========\n");
+    benchmark("linear", posting_1, posting_2, out, linearIntersection);
+    printf("--------\n");
+    benchmark("binary", posting_1, posting_2, out, binarySearchIntersection);
+    printf("--------\n");
+    benchmark("gallop", posting_1, posting_2, out, gallopingIntersection);
+    printf("--------\n");
+    benchmark("gallop2", posting_1, posting_2, out, gallopingIntersection2);
+    printf("--------\n");
+    benchmark("gallop3", posting_1, posting_2, out, gallopingIntersection3);
+    printf("--------\n");
+    benchmark("simdV1", posting_1, posting_2, out, simdIntersectionV1);
+
     return 0;
 }
