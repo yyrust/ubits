@@ -35,6 +35,7 @@ flags = [
 # relevant for c++ headers.
 # For a C project, you would set this to 'c' instead of 'c++'.
 '-msse4',
+'-mavx2',
 '-x', 'c++',
 '-I', '.',
 '-I', home_dir + '/local/include',

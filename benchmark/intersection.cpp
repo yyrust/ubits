@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cassert>
 #include <smmintrin.h>
+#include <immintrin.h>
 #define __STDC_FORMAT_MACROS
 #include <inttypes.h>
 
@@ -214,8 +215,9 @@ static void simdIntersectionV1(PostingList const &L1, PostingList const &L2, Pos
 {
     size_t size1 = L1.size();
     size_t size2_aligned = L2.size() & (~0xFull);
+    size_t i = 0;
     size_t j = 0;
-    for (size_t i = 0; i < size1; i++) {
+    for (; i < size1; i++) {
         while (L2[j+3] < L1[i]) {
             j += 4;
             if (j >= size2_aligned)
@@ -228,7 +230,51 @@ static void simdIntersectionV1(PostingList const &L1, PostingList const &L2, Pos
         if (eq_mask)
             out.push_back(L1[i]);
     }
-    // TODO: handle the remained
+
+    // handle the remained
+    size_t size2 = L2.size();
+    for (; i < size1; i++) {
+        while (L2[j] < L1[i]) {
+            j++;
+            if (j >= size2)
+                return;
+        }
+        if (L1[i] == L2[j])
+            out.push_back(L1[i]);
+    }
+}
+
+static void avxIntersectionV1(PostingList const &L1, PostingList const &L2, PostingList &out)
+{
+    size_t size1 = L1.size();
+    size_t size2_aligned = L2.size() & (~0x1Full);
+    size_t i = 0;
+    size_t j = 0;
+    for (; i < size1; i++) {
+        while (L2[j+7] < L1[i]) {
+            j += 8;
+            if (j >= size2_aligned)
+                return;
+        }
+        __m256i r1 = _mm256_set1_epi32(L1[i]);
+        __m256i r2 = _mm256_loadu_si256((__m256i*)(L2.data() + j));
+        __m256i r3 = _mm256_cmpeq_epi32(r1, r2);
+        uint32_t eq_mask = _mm256_movemask_epi8(r3);
+        if (eq_mask)
+            out.push_back(L1[i]);
+    }
+
+    // handle the remained
+    size_t size2 = L2.size();
+    for (; i < size1; i++) {
+        while (L2[j] < L1[i]) {
+            j++;
+            if (j >= size2)
+                return;
+        }
+        if (L1[i] == L2[j])
+            out.push_back(L1[i]);
+    }
 }
 
 typedef void (*IntersectionCallback)(PostingList const &, PostingList const &, PostingList &);
@@ -298,6 +344,8 @@ int main(int argc, char *argv[])
     benchmark("gallop3", posting_1, posting_2, out, gallopingIntersection3);
     printf("--------\n");
     benchmark("simdV1", posting_1, posting_2, out, simdIntersectionV1);
+    printf("--------\n");
+    benchmark("avxV1", posting_1, posting_2, out, avxIntersectionV1);
 
     printf("\n[longer list first]\n");
     printf("========\n");
@@ -312,6 +360,8 @@ int main(int argc, char *argv[])
     benchmark("gallop3", posting_2, posting_1, out, gallopingIntersection3);
     printf("--------\n");
     benchmark("simdV1", posting_2, posting_1, out, simdIntersectionV1);
+    printf("--------\n");
+    benchmark("avx2V1", posting_2, posting_1, out, avxIntersectionV1);
 
     posting_1.clear();
     posting_2.clear();
@@ -330,6 +380,8 @@ int main(int argc, char *argv[])
     benchmark("gallop3", posting_1, posting_2, out, gallopingIntersection3);
     printf("--------\n");
     benchmark("simdV1", posting_1, posting_2, out, simdIntersectionV1);
+    printf("--------\n");
+    benchmark("avxV1", posting_1, posting_2, out, avxIntersectionV1);
 
     posting_1.clear();
     posting_2.clear();
@@ -348,6 +400,8 @@ int main(int argc, char *argv[])
     benchmark("gallop3", posting_1, posting_2, out, gallopingIntersection3);
     printf("--------\n");
     benchmark("simdV1", posting_1, posting_2, out, simdIntersectionV1);
+    printf("--------\n");
+    benchmark("avxV1", posting_1, posting_2, out, avxIntersectionV1);
 
     return 0;
 }

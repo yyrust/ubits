@@ -1,4 +1,4 @@
-add_definitions(-std=c++11 -msse4)
+add_definitions(-std=c++11 -msse4 -mavx2)
 include_directories(${PROJECT_SOURCE_DIR})
 add_executable(bitset_benchmark bitset_benchmark.cpp)
 add_executable(binsearch_benchmark binary_search.cpp)
