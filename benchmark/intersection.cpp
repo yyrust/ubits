@@ -163,6 +163,146 @@ struct GallopingSeek
     }
 };
 
+struct AVX2
+{
+    typedef __m256i value_type;
+    typedef uint32_t mask_type;
+    const static size_t kVectorSize = 8;
+
+    template<typename T>
+    static value_type load(T *array)
+    {
+        return _mm256_loadu_si256((const value_type *)array);
+    }
+
+    static value_type init(DocId id)
+    {
+        return _mm256_set1_epi32(id);
+    }
+
+    static mask_type eq(const value_type &lhs, const value_type &rhs)
+    {
+        value_type result = _mm256_cmpeq_epi32(lhs, rhs);
+        return _mm256_movemask_epi8(result);
+    }
+
+    static mask_type lt(const value_type &lhs, const value_type &rhs)
+    {
+        value_type result = _mm256_cmpgt_epi32(rhs, lhs);
+        return _mm256_movemask_epi8(result);
+    }
+
+    static mask_type gt(const value_type &lhs, const value_type &rhs)
+    {
+        value_type result = _mm256_cmpgt_epi32(lhs, rhs);
+        return _mm256_movemask_epi8(result);
+    }
+};
+
+struct SSE4
+{
+    typedef __m128i value_type;
+    typedef uint16_t mask_type;
+    const static size_t kVectorSize = 4;
+
+    template<typename T>
+    static value_type load(T *array)
+    {
+        return _mm_loadu_si128((const value_type *)array);
+    }
+
+    static value_type init(DocId id)
+    {
+        return _mm_set1_epi32(id);
+    }
+
+    static mask_type eq(const value_type &lhs, const value_type &rhs)
+    {
+        value_type result = _mm_cmpeq_epi32(lhs, rhs);
+        return _mm_movemask_epi8(result);
+    }
+
+    static mask_type lt(const value_type &lhs, const value_type &rhs)
+    {
+        value_type result = _mm_cmplt_epi32(lhs, rhs);
+        return _mm_movemask_epi8(result);
+    }
+
+    static mask_type gt(const value_type &lhs, const value_type &rhs)
+    {
+        value_type result = _mm_cmpgt_epi32(lhs, rhs);
+        return _mm_movemask_epi8(result);
+    }
+};
+
+template<typename SIMDTraits>
+struct SimdGallopingSeeker
+{
+    PostingList const &m_list;
+    size_t m_alignedSize;
+    size_t m_index;
+    size_t m_index2;
+
+    SimdGallopingSeeker(PostingList const &list)
+    : m_list(list)
+    , m_alignedSize(list.size() & ~(SIMDTraits::kVectorSize-1))
+    , m_index(0)
+    , m_index2(0)
+    {
+    }
+
+    DocId next()
+    {
+        m_index2++;
+        m_index = m_index2 & ~(SIMDTraits::kVectorSize-1);
+        if (m_index2 >= m_list.size())
+            return kInvalidDocId;
+        else
+            return m_list[m_index2];
+    }
+
+    DocId seek(const DocId id)
+    {
+        size_t step = SIMDTraits::kVectorSize;
+        size_t index = m_index;
+        size_t tail, prev = index;
+        while ((tail = index + (SIMDTraits::kVectorSize-1)) < m_alignedSize) {
+            if (m_list[tail] >= id) { // found
+                // binary search for the first block whose tail >= id
+                const DocId *low = m_list.data() + prev;
+                size_t n = (index + SIMDTraits::kVectorSize - prev) / SIMDTraits::kVectorSize;
+                size_t half;
+                while ((half = n / 2) > 0) {
+                    const DocId *mid = low + half * SIMDTraits::kVectorSize;
+                    low = (*(mid + SIMDTraits::kVectorSize - 1) < id) ? mid : low;
+                    n -= half;
+                }
+                if (prev != index)
+                    low += SIMDTraits::kVectorSize;
+                m_index = low - m_list.data();
+                typename SIMDTraits::value_type lhs = SIMDTraits::init(id);
+                typename SIMDTraits::value_type rhs = SIMDTraits::load(low);
+                typename SIMDTraits::mask_type le_mask = ~SIMDTraits::gt(lhs, rhs);
+                int offset = __builtin_ctz(le_mask) / 4;
+                m_index2 = m_index + offset;
+                return m_list[m_index2];
+            }
+            prev = index;
+            index += step;
+            step *= 2;
+        }
+        m_index2 = index;
+
+        // fallback to linear search
+        for (; m_index2 < m_list.size(); m_index2++) {
+            if (m_list[m_index2] >= id) {
+                return m_list[m_index2];
+            }
+        }
+        return kInvalidDocId;
+    }
+};
+
 /**
  *  \tparam Seek1 algorithm used to seek doc id in the 1st list
  *  \tparam Seek2 algorithm used to seek doc id in the 2nd list
@@ -186,6 +326,30 @@ struct GallopingIntersection
                 out.push_back(id);
                 ++i1;
                 ++i2;
+            }
+        }
+    }
+};
+
+template<typename SIMDTraits>
+struct SimdGallopingIntersection
+{
+    static void intersection(PostingList const &L1, PostingList const &L2, PostingList &out)
+    {
+        if (L1.empty())
+            return;
+        SimdGallopingSeeker<SIMDTraits> s1(L1);
+        SimdGallopingSeeker<SIMDTraits> s2(L2);
+        DocId id = L1.front();
+        DocId id2;
+        while ((id2 = s2.seek(id)) != kInvalidDocId) {
+            if (id != id2)
+                id = s1.seek(id2);
+            else {
+                out.push_back(id);
+                id = s1.next();
+                if (id == kInvalidDocId)
+                    return;
             }
         }
     }
@@ -392,6 +556,8 @@ int main(int argc, char *argv[])
     IntersectionCallback gallopingIntersection = GallopingIntersection<BinarySeek, NormalGallopingSeek>::intersection;
     IntersectionCallback gallopingIntersection2 = GallopingIntersection<NormalGallopingSeek>::intersection;
     IntersectionCallback gallopingIntersection3 = GallopingIntersection<SimpleGallopingSeek>::intersection;
+    IntersectionCallback sse4GallopingIntersection = SimdGallopingIntersection<SSE4>::intersection;
+    IntersectionCallback avx2GallopingIntersection = SimdGallopingIntersection<AVX2>::intersection;
 
     printf("\n[shorter list first]\n");
     printf("========\n");
@@ -404,6 +570,10 @@ int main(int argc, char *argv[])
     benchmark("gallop2", posting_1, posting_2, out, gallopingIntersection2);
     printf("--------\n");
     benchmark("gallop3", posting_1, posting_2, out, gallopingIntersection3);
+    printf("--------\n");
+    benchmark("gallop_sse4", posting_1, posting_2, out, sse4GallopingIntersection);
+    printf("--------\n");
+    benchmark("gallop_avx2", posting_1, posting_2, out, avx2GallopingIntersection);
     printf("--------\n");
     benchmark("simdV1", posting_1, posting_2, out, simdIntersectionV1);
     printf("--------\n");
@@ -420,6 +590,10 @@ int main(int argc, char *argv[])
     benchmark("gallop2", posting_2, posting_1, out, gallopingIntersection2);
     printf("--------\n");
     benchmark("gallop3", posting_2, posting_1, out, gallopingIntersection3);
+    printf("--------\n");
+    benchmark("gallop_sse4", posting_2, posting_1, out, sse4GallopingIntersection);
+    printf("--------\n");
+    benchmark("gallop_avx2", posting_2, posting_1, out, avx2GallopingIntersection);
     printf("--------\n");
     benchmark("simdV1", posting_2, posting_1, out, simdIntersectionV1);
     printf("--------\n");
@@ -441,6 +615,10 @@ int main(int argc, char *argv[])
     printf("--------\n");
     benchmark("gallop3", posting_1, posting_2, out, gallopingIntersection3);
     printf("--------\n");
+    benchmark("gallop_sse4", posting_1, posting_2, out, sse4GallopingIntersection);
+    printf("--------\n");
+    benchmark("gallop_avx2", posting_1, posting_2, out, avx2GallopingIntersection);
+    printf("--------\n");
     benchmark("simdV1", posting_1, posting_2, out, simdIntersectionV1);
     printf("--------\n");
     benchmark("avxV1", posting_1, posting_2, out, avxIntersectionV1);
@@ -460,6 +638,10 @@ int main(int argc, char *argv[])
     benchmark("gallop2", posting_1, posting_2, out, gallopingIntersection2);
     printf("--------\n");
     benchmark("gallop3", posting_1, posting_2, out, gallopingIntersection3);
+    printf("--------\n");
+    benchmark("gallop_sse4", posting_1, posting_2, out, sse4GallopingIntersection);
+    printf("--------\n");
+    benchmark("gallop_avx2", posting_1, posting_2, out, avx2GallopingIntersection);
     printf("--------\n");
     benchmark("simdV1", posting_1, posting_2, out, simdIntersectionV1);
     printf("--------\n");
