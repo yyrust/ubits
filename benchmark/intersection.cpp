@@ -299,9 +299,10 @@ static void printList(const char *desc, PostingList const &list)
     printf("\n");
 }
 
-static void benchmark(const char *desc, PostingList const &L1, PostingList const &L2, PostingList &out, IntersectionCallback intersection)
+/// \returns average time in microseconds
+static double benchmark(const char *desc, PostingList const &L1, PostingList const &L2, PostingList &out, IntersectionCallback intersection, size_t loopCount = 100)
 {
-    const size_t kLoopCount = 1000;
+    const size_t kLoopCount = loopCount;
     const auto t_begin = std::chrono::high_resolution_clock::now();
     for (size_t i = 0; i < kLoopCount; i++) {
         out.clear();
@@ -309,8 +310,69 @@ static void benchmark(const char *desc, PostingList const &L1, PostingList const
     }
     const auto t_end = std::chrono::high_resolution_clock::now();
     const auto timespanUs = std::chrono::duration_cast<std::chrono::microseconds>(t_end - t_begin).count();
-    printf("[%s] total time: %" PRId64 " us, avg: %lf us\n", desc, timespanUs, (double)timespanUs/kLoopCount);
+    const auto avgTimeUs = (double)timespanUs/kLoopCount;
+    printf("[%s] total time: %" PRId64 " us, avg: %lf us\n", desc, timespanUs, avgTimeUs);
     printList("result", out);
+    return avgTimeUs;
+}
+
+// Generates the following sequence until reaching the limit:
+// 1 * 10^0, 2 * 10^0, ... , 9 * 10^0,
+// 1 * 10^1, 2 * 10^1, ... , 9 * 10^1,
+// 1 * 10^2, 2 * 10^2, ... , 9 * 10^2,
+// ...
+struct ExpLevelGenerator
+{
+public:
+    ExpLevelGenerator(size_t max, size_t initialExp = 0)
+    : m_max(max)
+    , m_scalar(1)
+    {
+        m_factor = 1;
+        for (size_t lv = 0; lv < initialExp; lv++) {
+            m_factor *= 10;
+        }
+    }
+    /// \returns next index, or zero if finished
+    size_t next()
+    {
+        size_t index = m_factor * m_scalar;
+        if (m_scalar == 9) {
+            m_scalar = 1;
+            m_factor *= 10;
+        }
+        else {
+            m_scalar++;
+        }
+        return index > m_max ? 0 : index;
+    }
+private:
+    size_t m_max;
+    size_t m_scalar; // in range [1,9]
+    size_t m_factor;
+};
+
+static void diagram(const char *desc, IntersectionCallback intersection, DocId maxId)
+{
+    const DocId kMaxId = maxId;
+    PostingList posting_1;
+    PostingList posting_2;
+    PostingList out;
+    size_t initialExp = log(maxId)/log(10) - 1;
+    printf("maxId: %u, exp: %zu\n", kMaxId, initialExp);
+    ExpLevelGenerator i1(kMaxId, initialExp);
+    while (DocId d1 = i1.next()) {
+        posting_1.clear();
+        generateList(kMaxId, d1, posting_1);
+        ExpLevelGenerator i2(kMaxId, initialExp);
+        while (DocId d2 = i2.next()) {
+            posting_2.clear();
+            generateList(kMaxId, d2 + 1, posting_2);  // d2 may be equal to d1, and d2+1 makes a different random seed than d2
+            printf("[L1:%zu] [L2:%zu]\n", posting_1.size(), posting_2.size());
+            double avgTimeUs = benchmark(desc, posting_1, posting_2, out, intersection, 10);
+            printf("[DIAG] [%s] %zu %zu %lf\n", desc, posting_1.size(), posting_2.size(), avgTimeUs);
+        }
+    }
 }
 
 int main(int argc, char *argv[])
