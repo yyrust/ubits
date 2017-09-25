@@ -13,6 +13,14 @@ typedef std::vector<DocId> PostingList;
 
 const DocId kInvalidDocId = 0xFFFFFFFFu;
 
+#define LOG_MESSAGE(level, fmt, ...) fprintf(stderr, "%s:%d: %s: " fmt "\n", __FILE__, __LINE__, #level, ##__VA_ARGS__)
+#define DEBUG 0
+#if DEBUG
+#   define LOG_DEBUG(fmt...) LOG_MESSAGE(INFO, fmt)
+#else
+#   define LOG_DEBUG(fmt...)
+#endif
+
 static void generateList(DocId maxId, DocId length, PostingList &list)
 {
     assert(length <= maxId + 1);
@@ -303,6 +311,61 @@ struct SimdGallopingSeeker
     }
 };
 
+template<typename SIMDTraits>
+struct SIMDLinearSeeker
+{
+    PostingList const &m_list;
+    size_t m_alignedSize;
+    size_t m_index;
+
+    SIMDLinearSeeker(PostingList const &list)
+    : m_list(list)
+    , m_alignedSize(list.size() & ~(SIMDTraits::kVectorSize-1))
+    , m_index(0)
+    {
+    }
+
+    DocId next()
+    {
+        m_index++;
+        if (m_index >= m_list.size())
+            return kInvalidDocId;
+        else
+            return m_list[m_index++];
+    }
+
+    DocId seek(const DocId id)
+    {
+        LOG_DEBUG("-- [%p] seek %u --", this, id);
+        const size_t kVectorSize = SIMDTraits::kVectorSize;
+        size_t blk_index = m_index & ~(SIMDTraits::kVectorSize-1);
+        while (blk_index < m_alignedSize) {
+            LOG_DEBUG("   blk_index: %zu, %u~%u", blk_index, m_list[blk_index], m_list[blk_index+ kVectorSize - 1]);
+            if (m_list[blk_index + kVectorSize - 1] < id) {
+                blk_index += kVectorSize;
+            }
+            else {
+                typename SIMDTraits::value_type lhs = SIMDTraits::init(id);
+                typename SIMDTraits::value_type rhs = SIMDTraits::load(m_list.data() + blk_index);
+                typename SIMDTraits::mask_type le_mask = ~SIMDTraits::gt(lhs, rhs);
+                int offset = __builtin_ctz(le_mask) / sizeof(DocId);
+                m_index = blk_index + offset;
+                DocId result = m_list[m_index];
+                LOG_DEBUG("   return index: %zu, val: %u", m_index, result);
+                return result;
+            }
+        }
+
+        // handle the unaligned data
+        for (; m_index < m_list.size(); m_index++) {
+            if (m_list[m_index] >= id) {
+                return m_list[m_index];
+            }
+        }
+        return kInvalidDocId;
+    }
+};
+
 /**
  *  \tparam Seek1 algorithm used to seek doc id in the 1st list
  *  \tparam Seek2 algorithm used to seek doc id in the 2nd list
@@ -331,16 +394,16 @@ struct GallopingIntersection
     }
 };
 
-template<typename SIMDTraits>
-struct SimdGallopingIntersection
+template<typename Seeker>
+struct GeneralIntersection
 {
     static void intersection(PostingList const &L1, PostingList const &L2, PostingList &out)
     {
         if (L1.empty())
             return;
-        SimdGallopingSeeker<SIMDTraits> s1(L1);
-        SimdGallopingSeeker<SIMDTraits> s2(L2);
-        DocId id = L1.front();
+        Seeker s1(L1);
+        Seeker s2(L2);
+        DocId id = s1.next();
         DocId id2;
         while ((id2 = s2.seek(id)) != kInvalidDocId) {
             if (id != id2)
@@ -375,71 +438,42 @@ static void binarySearchIntersection(PostingList const &L1, PostingList const &L
     }
 }
 
-static void simdIntersectionV1(PostingList const &L1, PostingList const &L2, PostingList &out)
+template<typename SIMDTraits>
+struct LemireV1Intersection
 {
-    size_t size1 = L1.size();
-    size_t size2_aligned = L2.size() & (~0xFull);
-    size_t i = 0;
-    size_t j = 0;
-    for (; i < size1; i++) {
-        while (L2[j+3] < L1[i]) {
-            j += 4;
-            if (j >= size2_aligned)
-                return;
+    static void intersection(PostingList const &L1, PostingList const &L2, PostingList &out)
+    {
+        size_t size1 = L1.size();
+        const size_t kVectorSize = SIMDTraits::kVectorSize;
+        size_t size2_aligned = L2.size() & ~(kVectorSize-1);
+        size_t i = 0;
+        size_t j = 0;
+        for (; i < size1; i++) {
+            while (L2[j+kVectorSize-1] < L1[i]) {
+                j += kVectorSize;
+                if (j >= size2_aligned)
+                    return;
+            }
+            typename SIMDTraits::value_type r1 = SIMDTraits::init(L1[i]);
+            typename SIMDTraits::value_type r2 = SIMDTraits::load(L2.data() + j);
+            typename SIMDTraits::mask_type eq_mask = SIMDTraits::eq(r1, r2);
+            if (eq_mask)
+                out.push_back(L1[i]);
         }
-        __m128i r1 = _mm_set1_epi32(L1[i]);
-        __m128i r2 = _mm_loadu_si128((__m128i*)(L2.data() + j));
-        __m128i r3 = _mm_cmpeq_epi32(r1, r2);
-        uint32_t eq_mask = _mm_movemask_epi8(r3);
-        if (eq_mask)
-            out.push_back(L1[i]);
-    }
 
-    // handle the remained
-    size_t size2 = L2.size();
-    for (; i < size1; i++) {
-        while (L2[j] < L1[i]) {
-            j++;
-            if (j >= size2)
-                return;
+        // handle the remained
+        size_t size2 = L2.size();
+        for (; i < size1; i++) {
+            while (L2[j] < L1[i]) {
+                j++;
+                if (j >= size2)
+                    return;
+            }
+            if (L1[i] == L2[j])
+                out.push_back(L1[i]);
         }
-        if (L1[i] == L2[j])
-            out.push_back(L1[i]);
     }
-}
-
-static void avxIntersectionV1(PostingList const &L1, PostingList const &L2, PostingList &out)
-{
-    size_t size1 = L1.size();
-    size_t size2_aligned = L2.size() & (~0x1Full);
-    size_t i = 0;
-    size_t j = 0;
-    for (; i < size1; i++) {
-        while (L2[j+7] < L1[i]) {
-            j += 8;
-            if (j >= size2_aligned)
-                return;
-        }
-        __m256i r1 = _mm256_set1_epi32(L1[i]);
-        __m256i r2 = _mm256_loadu_si256((__m256i*)(L2.data() + j));
-        __m256i r3 = _mm256_cmpeq_epi32(r1, r2);
-        uint32_t eq_mask = _mm256_movemask_epi8(r3);
-        if (eq_mask)
-            out.push_back(L1[i]);
-    }
-
-    // handle the remained
-    size_t size2 = L2.size();
-    for (; i < size1; i++) {
-        while (L2[j] < L1[i]) {
-            j++;
-            if (j >= size2)
-                return;
-        }
-        if (L1[i] == L2[j])
-            out.push_back(L1[i]);
-    }
-}
+};
 
 typedef void (*IntersectionCallback)(PostingList const &, PostingList const &, PostingList &);
 
@@ -478,6 +512,43 @@ static double benchmark(const char *desc, PostingList const &L1, PostingList con
     printf("[%s] total time: %" PRId64 " us, avg: %lf us\n", desc, timespanUs, avgTimeUs);
     printList("result", out);
     return avgTimeUs;
+}
+
+static void benchmarkAll(const char *desc, PostingList const &posting_1, PostingList const &posting_2, PostingList &out)
+{
+    typedef GallopingSeek<BinarySeek> NormalGallopingSeek;
+    typedef GallopingSeek<SimpleBinarySeek> SimpleGallopingSeek;
+    IntersectionCallback gallopingIntersection = GallopingIntersection<BinarySeek, NormalGallopingSeek>::intersection;
+    IntersectionCallback gallopingIntersection2 = GallopingIntersection<NormalGallopingSeek>::intersection;
+    IntersectionCallback gallopingIntersection3 = GallopingIntersection<SimpleGallopingSeek>::intersection;
+    IntersectionCallback sse4GallopingIntersection = GeneralIntersection<SimdGallopingSeeker<SSE4> >::intersection;
+    IntersectionCallback avx2GallopingIntersection = GeneralIntersection<SimdGallopingSeeker<AVX2> >::intersection;
+    IntersectionCallback sse4LinearIntersection = GeneralIntersection<SIMDLinearSeeker<SSE4> >::intersection;
+    IntersectionCallback avx2LinearIntersection = GeneralIntersection<SIMDLinearSeeker<AVX2> >::intersection;
+
+    printf("\n[%s]\n", desc);
+    printf("========\n");
+    benchmark("linear", posting_1, posting_2, out, linearIntersection);
+    printf("--------\n");
+    benchmark("binary", posting_1, posting_2, out, binarySearchIntersection);
+    printf("--------\n");
+    benchmark("gallop", posting_1, posting_2, out, gallopingIntersection);
+    printf("--------\n");
+    benchmark("gallop2", posting_1, posting_2, out, gallopingIntersection2);
+    printf("--------\n");
+    benchmark("gallop3", posting_1, posting_2, out, gallopingIntersection3);
+    printf("--------\n");
+    benchmark("gallop_sse4", posting_1, posting_2, out, sse4GallopingIntersection);
+    printf("--------\n");
+    benchmark("gallop_avx2", posting_1, posting_2, out, avx2GallopingIntersection);
+    printf("--------\n");
+    benchmark("lemire_v1_sse4", posting_1, posting_2, out, LemireV1Intersection<SSE4>::intersection);
+    printf("--------\n");
+    benchmark("lemire_v1_avx2", posting_1, posting_2, out, LemireV1Intersection<AVX2>::intersection);
+    printf("--------\n");
+    benchmark("linear_sse4", posting_1, posting_2, out, sse4LinearIntersection);
+    printf("--------\n");
+    benchmark("linear_avx2", posting_1, posting_2, out, avx2LinearIntersection);
 }
 
 // Generates the following sequence until reaching the limit:
@@ -531,7 +602,7 @@ static void diagram(const char *desc, IntersectionCallback intersection, DocId m
         ExpLevelGenerator i2(kMaxId, initialExp);
         while (DocId d2 = i2.next()) {
             posting_2.clear();
-            generateList(kMaxId, d2 + 1, posting_2);  // d2 may be equal to d1, and d2+1 makes a different random seed than d2
+            generateList(kMaxId, d2 + 1, posting_2);  // d2 may be equal to d1, and d2+1 makes a different random seed than the one d2 makes
             printf("[L1:%zu] [L2:%zu]\n", posting_1.size(), posting_2.size());
             double avgTimeUs = benchmark(desc, posting_1, posting_2, out, intersection, 10);
             printf("[DIAG] [%s] %zu %zu %lf\n", desc, posting_1.size(), posting_2.size(), avgTimeUs);
@@ -551,101 +622,20 @@ int main(int argc, char *argv[])
     printList("L1", posting_1);
     printList("L2", posting_2);
 
-    typedef GallopingSeek<BinarySeek> NormalGallopingSeek;
-    typedef GallopingSeek<SimpleBinarySeek> SimpleGallopingSeek;
-    IntersectionCallback gallopingIntersection = GallopingIntersection<BinarySeek, NormalGallopingSeek>::intersection;
-    IntersectionCallback gallopingIntersection2 = GallopingIntersection<NormalGallopingSeek>::intersection;
-    IntersectionCallback gallopingIntersection3 = GallopingIntersection<SimpleGallopingSeek>::intersection;
-    IntersectionCallback sse4GallopingIntersection = SimdGallopingIntersection<SSE4>::intersection;
-    IntersectionCallback avx2GallopingIntersection = SimdGallopingIntersection<AVX2>::intersection;
-
-    printf("\n[shorter list first]\n");
-    printf("========\n");
-    benchmark("linear", posting_1, posting_2, out, linearIntersection);
-    printf("--------\n");
-    benchmark("binary", posting_1, posting_2, out, binarySearchIntersection);
-    printf("--------\n");
-    benchmark("gallop", posting_1, posting_2, out, gallopingIntersection);
-    printf("--------\n");
-    benchmark("gallop2", posting_1, posting_2, out, gallopingIntersection2);
-    printf("--------\n");
-    benchmark("gallop3", posting_1, posting_2, out, gallopingIntersection3);
-    printf("--------\n");
-    benchmark("gallop_sse4", posting_1, posting_2, out, sse4GallopingIntersection);
-    printf("--------\n");
-    benchmark("gallop_avx2", posting_1, posting_2, out, avx2GallopingIntersection);
-    printf("--------\n");
-    benchmark("simdV1", posting_1, posting_2, out, simdIntersectionV1);
-    printf("--------\n");
-    benchmark("avxV1", posting_1, posting_2, out, avxIntersectionV1);
-
-    printf("\n[longer list first]\n");
-    printf("========\n");
-    benchmark("linear", posting_2, posting_1, out, linearIntersection);
-    printf("--------\n");
-    benchmark("binary", posting_2, posting_1, out, binarySearchIntersection);
-    printf("--------\n");
-    benchmark("gallop", posting_2, posting_1, out, gallopingIntersection);
-    printf("--------\n");
-    benchmark("gallop2", posting_2, posting_1, out, gallopingIntersection2);
-    printf("--------\n");
-    benchmark("gallop3", posting_2, posting_1, out, gallopingIntersection3);
-    printf("--------\n");
-    benchmark("gallop_sse4", posting_2, posting_1, out, sse4GallopingIntersection);
-    printf("--------\n");
-    benchmark("gallop_avx2", posting_2, posting_1, out, avx2GallopingIntersection);
-    printf("--------\n");
-    benchmark("simdV1", posting_2, posting_1, out, simdIntersectionV1);
-    printf("--------\n");
-    benchmark("avx2V1", posting_2, posting_1, out, avxIntersectionV1);
+    benchmarkAll("shorter list first", posting_1, posting_2, out);
+    benchmarkAll("longer list first", posting_2, posting_1, out);
 
     posting_1.clear();
     posting_2.clear();
     generateList(kMaxId, 10001, posting_1);
     generateList(kMaxId, 10000, posting_2);
-    printf("\n[similar length 10^4]\n");
-    printf("========\n");
-    benchmark("linear", posting_1, posting_2, out, linearIntersection);
-    printf("--------\n");
-    benchmark("binary", posting_1, posting_2, out, binarySearchIntersection);
-    printf("--------\n");
-    benchmark("gallop", posting_1, posting_2, out, gallopingIntersection);
-    printf("--------\n");
-    benchmark("gallop2", posting_1, posting_2, out, gallopingIntersection2);
-    printf("--------\n");
-    benchmark("gallop3", posting_1, posting_2, out, gallopingIntersection3);
-    printf("--------\n");
-    benchmark("gallop_sse4", posting_1, posting_2, out, sse4GallopingIntersection);
-    printf("--------\n");
-    benchmark("gallop_avx2", posting_1, posting_2, out, avx2GallopingIntersection);
-    printf("--------\n");
-    benchmark("simdV1", posting_1, posting_2, out, simdIntersectionV1);
-    printf("--------\n");
-    benchmark("avxV1", posting_1, posting_2, out, avxIntersectionV1);
+    benchmarkAll("similar length 10^4", posting_1, posting_2, out);
 
     posting_1.clear();
     posting_2.clear();
     generateList(kMaxId, 100001, posting_1);
     generateList(kMaxId, 100000, posting_2);
-    printf("\n[similar length 10^5]\n");
-    printf("========\n");
-    benchmark("linear", posting_1, posting_2, out, linearIntersection);
-    printf("--------\n");
-    benchmark("binary", posting_1, posting_2, out, binarySearchIntersection);
-    printf("--------\n");
-    benchmark("gallop", posting_1, posting_2, out, gallopingIntersection);
-    printf("--------\n");
-    benchmark("gallop2", posting_1, posting_2, out, gallopingIntersection2);
-    printf("--------\n");
-    benchmark("gallop3", posting_1, posting_2, out, gallopingIntersection3);
-    printf("--------\n");
-    benchmark("gallop_sse4", posting_1, posting_2, out, sse4GallopingIntersection);
-    printf("--------\n");
-    benchmark("gallop_avx2", posting_1, posting_2, out, avx2GallopingIntersection);
-    printf("--------\n");
-    benchmark("simdV1", posting_1, posting_2, out, simdIntersectionV1);
-    printf("--------\n");
-    benchmark("avxV1", posting_1, posting_2, out, avxIntersectionV1);
+    benchmarkAll("similar length 10^5", posting_1, posting_2, out);
 
     return 0;
 }
