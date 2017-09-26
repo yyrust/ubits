@@ -33,7 +33,7 @@ static void generateList(DocId maxId, DocId length, PostingList &list)
     list.erase(std::unique(list.begin(), list.end()), list.end());
 }
 
-static void linearIntersection(PostingList const &L1, PostingList const &L2, PostingList &out)
+static void mergeIntersection(PostingList const &L1, PostingList const &L2, PostingList &out)
 {
     PostingList::const_iterator i1 = L1.begin(), end1 = L1.end();
     PostingList::const_iterator i2 = L2.begin(), end2 = L2.end();
@@ -245,14 +245,14 @@ struct SSE4
 };
 
 template<typename SIMDTraits>
-struct SimdGallopingSeeker
+struct SIMDGallopingSeeker
 {
     PostingList const &m_list;
     size_t m_alignedSize;
     size_t m_index;
     size_t m_index2;
 
-    SimdGallopingSeeker(PostingList const &list)
+    SIMDGallopingSeeker(PostingList const &list)
     : m_list(list)
     , m_alignedSize(list.size() & ~(SIMDTraits::kVectorSize-1))
     , m_index(0)
@@ -358,6 +358,37 @@ struct SIMDLinearSeeker
         }
 
         // handle the unaligned data
+        for (; m_index < m_list.size(); m_index++) {
+            if (m_list[m_index] >= id) {
+                return m_list[m_index];
+            }
+        }
+        return kInvalidDocId;
+    }
+};
+
+struct NormalLinearSeeker
+{
+    PostingList const &m_list;
+    size_t m_index;
+
+    NormalLinearSeeker(PostingList const &list)
+    : m_list(list)
+    , m_index(0)
+    {
+    }
+
+    DocId next()
+    {
+        m_index++;
+        if (m_index >= m_list.size())
+            return kInvalidDocId;
+        else
+            return m_list[m_index++];
+    }
+
+    DocId seek(const DocId id)
+    {
         for (; m_index < m_list.size(); m_index++) {
             if (m_list[m_index] >= id) {
                 return m_list[m_index];
@@ -522,14 +553,15 @@ static void benchmarkAll(const char *desc, PostingList const &posting_1, Posting
     IntersectionCallback gallopingIntersection = GallopingIntersection<BinarySeek, NormalGallopingSeek>::intersection;
     IntersectionCallback gallopingIntersection2 = GallopingIntersection<NormalGallopingSeek>::intersection;
     IntersectionCallback gallopingIntersection3 = GallopingIntersection<SimpleGallopingSeek>::intersection;
-    IntersectionCallback sse4GallopingIntersection = GeneralIntersection<SimdGallopingSeeker<SSE4> >::intersection;
-    IntersectionCallback avx2GallopingIntersection = GeneralIntersection<SimdGallopingSeeker<AVX2> >::intersection;
+    IntersectionCallback sse4GallopingIntersection = GeneralIntersection<SIMDGallopingSeeker<SSE4> >::intersection;
+    IntersectionCallback avx2GallopingIntersection = GeneralIntersection<SIMDGallopingSeeker<AVX2> >::intersection;
     IntersectionCallback sse4LinearIntersection = GeneralIntersection<SIMDLinearSeeker<SSE4> >::intersection;
     IntersectionCallback avx2LinearIntersection = GeneralIntersection<SIMDLinearSeeker<AVX2> >::intersection;
+    IntersectionCallback normalLinearIntersection = GeneralIntersection<NormalLinearSeeker>::intersection;
 
     printf("\n[%s]\n", desc);
     printf("========\n");
-    benchmark("linear", posting_1, posting_2, out, linearIntersection);
+    benchmark("merge", posting_1, posting_2, out, mergeIntersection);
     printf("--------\n");
     benchmark("binary", posting_1, posting_2, out, binarySearchIntersection);
     printf("--------\n");
@@ -546,6 +578,8 @@ static void benchmarkAll(const char *desc, PostingList const &posting_1, Posting
     benchmark("lemire_v1_sse4", posting_1, posting_2, out, LemireV1Intersection<SSE4>::intersection);
     printf("--------\n");
     benchmark("lemire_v1_avx2", posting_1, posting_2, out, LemireV1Intersection<AVX2>::intersection);
+    printf("--------\n");
+    benchmark("linear_normal", posting_1, posting_2, out, normalLinearIntersection);
     printf("--------\n");
     benchmark("linear_sse4", posting_1, posting_2, out, sse4LinearIntersection);
     printf("--------\n");
@@ -618,12 +652,13 @@ static void diagramAll(DocId maxId)
     IntersectionCallback gallopingIntersection = GallopingIntersection<BinarySeek, NormalGallopingSeek>::intersection;
     IntersectionCallback gallopingIntersection2 = GallopingIntersection<NormalGallopingSeek>::intersection;
     IntersectionCallback gallopingIntersection3 = GallopingIntersection<SimpleGallopingSeek>::intersection;
-    IntersectionCallback sse4GallopingIntersection = GeneralIntersection<SimdGallopingSeeker<SSE4> >::intersection;
-    IntersectionCallback avx2GallopingIntersection = GeneralIntersection<SimdGallopingSeeker<AVX2> >::intersection;
+    IntersectionCallback sse4GallopingIntersection = GeneralIntersection<SIMDGallopingSeeker<SSE4> >::intersection;
+    IntersectionCallback avx2GallopingIntersection = GeneralIntersection<SIMDGallopingSeeker<AVX2> >::intersection;
     IntersectionCallback sse4LinearIntersection = GeneralIntersection<SIMDLinearSeeker<SSE4> >::intersection;
     IntersectionCallback avx2LinearIntersection = GeneralIntersection<SIMDLinearSeeker<AVX2> >::intersection;
+    IntersectionCallback normalLinearIntersection = GeneralIntersection<NormalLinearSeeker>::intersection;
 
-    diagram("linear", linearIntersection, maxId);
+    diagram("merge", mergeIntersection, maxId);
     diagram("binary", binarySearchIntersection, maxId);
     diagram("gallop", gallopingIntersection, maxId);
     diagram("gallop2", gallopingIntersection2, maxId);
@@ -632,6 +667,7 @@ static void diagramAll(DocId maxId)
     diagram("gallop_avx2", avx2GallopingIntersection, maxId);
     diagram("lemire_v1_sse4", LemireV1Intersection<SSE4>::intersection, maxId);
     diagram("lemire_v1_avx2", LemireV1Intersection<AVX2>::intersection, maxId);
+    diagram("linear_normal", normalLinearIntersection, maxId);
     diagram("linear_sse4", sse4LinearIntersection, maxId);
     diagram("linear_avx2", avx2LinearIntersection, maxId);
 }
