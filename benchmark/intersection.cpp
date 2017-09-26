@@ -131,6 +131,27 @@ struct SimpleBinarySeek
     }
 };
 
+struct LinearSeek
+{
+    static DocId seek(PostingList const &list, size_t &start, size_t end, const DocId id)
+    {
+        size_t i = start;
+        for (; i < end; i++) {
+            const DocId v = list[i];
+            if (v >= id) {
+                start = i;
+                return v;
+            }
+        }
+        start = i;
+        return kInvalidDocId;
+    }
+    static DocId seek(PostingList const &list, size_t &start, const DocId id)
+    {
+        return seek(list, start, list.size(), id);
+    }
+};
+
 template<typename FallbackSeek>
 struct GallopingSeek
 {
@@ -550,9 +571,11 @@ static void benchmarkAll(const char *desc, PostingList const &posting_1, Posting
 {
     typedef GallopingSeek<BinarySeek> NormalGallopingSeek;
     typedef GallopingSeek<SimpleBinarySeek> SimpleGallopingSeek;
+    typedef GallopingSeek<LinearSeek> GallopingLinearSeek;
     IntersectionCallback gallopingIntersection = GallopingIntersection<BinarySeek, NormalGallopingSeek>::intersection;
     IntersectionCallback gallopingIntersection2 = GallopingIntersection<NormalGallopingSeek>::intersection;
     IntersectionCallback gallopingIntersection3 = GallopingIntersection<SimpleGallopingSeek>::intersection;
+    IntersectionCallback gallopingIntersection4 = GallopingIntersection<GallopingLinearSeek>::intersection;
     IntersectionCallback sse4GallopingIntersection = GeneralIntersection<SIMDGallopingSeeker<SSE4> >::intersection;
     IntersectionCallback avx2GallopingIntersection = GeneralIntersection<SIMDGallopingSeeker<AVX2> >::intersection;
     IntersectionCallback sse4LinearIntersection = GeneralIntersection<SIMDLinearSeeker<SSE4> >::intersection;
@@ -570,6 +593,8 @@ static void benchmarkAll(const char *desc, PostingList const &posting_1, Posting
     benchmark("gallop2", posting_1, posting_2, out, gallopingIntersection2);
     printf("--------\n");
     benchmark("gallop3", posting_1, posting_2, out, gallopingIntersection3);
+    printf("--------\n");
+    benchmark("gallop4", posting_1, posting_2, out, gallopingIntersection4);
     printf("--------\n");
     benchmark("gallop_sse4", posting_1, posting_2, out, sse4GallopingIntersection);
     printf("--------\n");
@@ -649,9 +674,11 @@ static void diagramAll(DocId maxId)
 {
     typedef GallopingSeek<BinarySeek> NormalGallopingSeek;
     typedef GallopingSeek<SimpleBinarySeek> SimpleGallopingSeek;
+    typedef GallopingSeek<LinearSeek> GallopingLinearSeek;
     IntersectionCallback gallopingIntersection = GallopingIntersection<BinarySeek, NormalGallopingSeek>::intersection;
     IntersectionCallback gallopingIntersection2 = GallopingIntersection<NormalGallopingSeek>::intersection;
     IntersectionCallback gallopingIntersection3 = GallopingIntersection<SimpleGallopingSeek>::intersection;
+    IntersectionCallback gallopingIntersection4 = GallopingIntersection<GallopingLinearSeek>::intersection;
     IntersectionCallback sse4GallopingIntersection = GeneralIntersection<SIMDGallopingSeeker<SSE4> >::intersection;
     IntersectionCallback avx2GallopingIntersection = GeneralIntersection<SIMDGallopingSeeker<AVX2> >::intersection;
     IntersectionCallback sse4LinearIntersection = GeneralIntersection<SIMDLinearSeeker<SSE4> >::intersection;
@@ -663,6 +690,7 @@ static void diagramAll(DocId maxId)
     diagram("gallop", gallopingIntersection, maxId);
     diagram("gallop2", gallopingIntersection2, maxId);
     diagram("gallop3", gallopingIntersection3, maxId);
+    diagram("gallop4", gallopingIntersection4, maxId);
     diagram("gallop_sse4", sse4GallopingIntersection, maxId);
     diagram("gallop_avx2", avx2GallopingIntersection, maxId);
     diagram("lemire_v1_sse4", LemireV1Intersection<SSE4>::intersection, maxId);
