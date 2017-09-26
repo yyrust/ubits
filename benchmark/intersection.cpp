@@ -610,7 +610,32 @@ static void diagram(const char *desc, IntersectionCallback intersection, DocId m
     }
 }
 
-int main(int argc, char *argv[])
+static void diagramAll(DocId maxId)
+{
+    typedef GallopingSeek<BinarySeek> NormalGallopingSeek;
+    typedef GallopingSeek<SimpleBinarySeek> SimpleGallopingSeek;
+    IntersectionCallback gallopingIntersection = GallopingIntersection<BinarySeek, NormalGallopingSeek>::intersection;
+    IntersectionCallback gallopingIntersection2 = GallopingIntersection<NormalGallopingSeek>::intersection;
+    IntersectionCallback gallopingIntersection3 = GallopingIntersection<SimpleGallopingSeek>::intersection;
+    IntersectionCallback sse4GallopingIntersection = GeneralIntersection<SimdGallopingSeeker<SSE4> >::intersection;
+    IntersectionCallback avx2GallopingIntersection = GeneralIntersection<SimdGallopingSeeker<AVX2> >::intersection;
+    IntersectionCallback sse4LinearIntersection = GeneralIntersection<SIMDLinearSeeker<SSE4> >::intersection;
+    IntersectionCallback avx2LinearIntersection = GeneralIntersection<SIMDLinearSeeker<AVX2> >::intersection;
+
+    diagram("linear", linearIntersection, maxId);
+    diagram("binary", binarySearchIntersection, maxId);
+    diagram("gallop", gallopingIntersection, maxId);
+    diagram("gallop2", gallopingIntersection2, maxId);
+    diagram("gallop3", gallopingIntersection3, maxId);
+    diagram("gallop_sse4", sse4GallopingIntersection, maxId);
+    diagram("gallop_avx2", avx2GallopingIntersection, maxId);
+    diagram("lemire_v1_sse4", LemireV1Intersection<SSE4>::intersection, maxId);
+    diagram("lemire_v1_avx2", LemireV1Intersection<AVX2>::intersection, maxId);
+    diagram("linear_sse4", sse4LinearIntersection, maxId);
+    diagram("linear_avx2", avx2LinearIntersection, maxId);
+}
+
+static void runBenchmarks()
 {
     const DocId kMaxId = 10000000u;
     PostingList posting_1;
@@ -636,6 +661,35 @@ int main(int argc, char *argv[])
     generateList(kMaxId, 100001, posting_1);
     generateList(kMaxId, 100000, posting_2);
     benchmarkAll("similar length 10^5", posting_1, posting_2, out);
+}
+
+int main(int argc, char *argv[])
+{
+    if (argc <= 1) {
+        runBenchmarks();
+        return 0;
+    }
+
+    bool opt_diagram = false;
+    bool opt_benchmark = false;
+    for (int a = 1; a < argc; a++) {
+        const char *arg = argv[a];
+        if (0 == strcmp(arg, "-d")) {
+            opt_diagram = true;
+        }
+        else if (0 == strcmp(arg, "-b")) {
+            opt_benchmark = true;
+        }
+    }
+
+    if (opt_benchmark) {
+        runBenchmarks();
+    }
+    if (opt_diagram) {
+        //const DocId kMaxId = 1000000u;
+        const DocId kMaxId = 100000u;
+        diagramAll(kMaxId);
+    }
 
     return 0;
 }
