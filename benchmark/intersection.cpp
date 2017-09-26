@@ -3,6 +3,7 @@
 #include <random>
 #include <chrono>
 #include <cassert>
+#include <cstring>
 #include <smmintrin.h>
 #include <immintrin.h>
 #define __STDC_FORMAT_MACROS
