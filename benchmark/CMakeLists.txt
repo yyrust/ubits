@@ -1,7 +1,14 @@
-add_definitions(-std=c++11 -msse4 -mavx2)
+add_definitions(-std=c++11 -msse4)
+
 if (UBITS_AVX2)
-    add_definitions(-DUBITS_AVX2)
+    add_definitions(-DUBITS_AVX2 -mavx2)
 endif()
+
+set(UBITS_BINUTILS_DIR ${UBITS_BINUTILS_DIR} CACHE PATH "path to binutils bin directory")
+if (UBITS_BINUTILS_DIR)
+    add_definitions(-B ${UBITS_BINUTILS_DIR})
+endif()
+
 include_directories(${PROJECT_SOURCE_DIR})
 add_executable(bitset_benchmark bitset_benchmark.cpp)
 add_executable(binsearch_benchmark binary_search.cpp)
