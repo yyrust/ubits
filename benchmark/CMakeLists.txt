@@ -1,4 +1,7 @@
 add_definitions(-std=c++11 -msse4 -mavx2)
+if (UBITS_AVX2)
+    add_definitions(-DUBITS_AVX2)
+endif()
 include_directories(${PROJECT_SOURCE_DIR})
 add_executable(bitset_benchmark bitset_benchmark.cpp)
 add_executable(binsearch_benchmark binary_search.cpp)

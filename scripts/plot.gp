@@ -1,7 +1,7 @@
 set terminal qt
 set xlabel "x"
 set ylabel "y"
-set zlabel "times (us)"
+set zlabel "time (us)"
 set hidden3d offset 0  # offset 0: each surface have the same color on top side and bottom side
 set dgrid3d 50,50 splines
 

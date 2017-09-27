@@ -5,7 +5,9 @@
 #include <cassert>
 #include <cstring>
 #include <smmintrin.h>
+#ifdef UBITS_AVX2
 #include <immintrin.h>
+#endif
 #define __STDC_FORMAT_MACROS
 #include <inttypes.h>
 
@@ -193,6 +195,7 @@ struct GallopingSeek
     }
 };
 
+#ifdef UBITS_AVX2
 struct AVX2
 {
     typedef __m256i value_type;
@@ -228,6 +231,7 @@ struct AVX2
         return _mm256_movemask_epi8(result);
     }
 };
+#endif
 
 struct SSE4
 {
@@ -528,6 +532,74 @@ struct LemireV1Intersection
     }
 };
 
+template<typename SIMDTraits>
+struct LemireV3Intersection
+{
+    static void intersection(PostingList const &L1, PostingList const &L2, PostingList &out)
+    {
+        size_t size1 = L1.size();
+        const size_t kVec4Size = SIMDTraits::kVectorSize * 4;
+        const size_t kVec3Size = SIMDTraits::kVectorSize * 3;
+        const size_t kVec2Size = SIMDTraits::kVectorSize * 2;
+        const size_t kVec1Size = SIMDTraits::kVectorSize;
+        size_t size2_aligned = L2.size() & ~(kVec4Size-1);
+        size_t i = 0;
+        size_t j = 0;
+        for (; i < size1; i++) {
+            while (L2[j+kVec4Size-1] < L1[i]) {
+                j += kVec4Size;
+                if (j >= size2_aligned)
+                    return;
+            }
+            typename SIMDTraits::value_type r1 = SIMDTraits::init(L1[i]);
+            typename SIMDTraits::value_type r2;
+            DocId id = L1[i];
+            if (L2[j+kVec2Size-1] >= id) {
+                if (L2[j+kVec1Size-1] >= id)
+                    r2 = SIMDTraits::load(L2.data() + j);
+                else
+                    r2 = SIMDTraits::load(L2.data() + j + kVec1Size);
+            }
+            else {
+                if (L2[j+kVec3Size-1] >= id)
+                    r2 = SIMDTraits::load(L2.data() + j + kVec2Size);
+                else
+                    r2 = SIMDTraits::load(L2.data() + j + kVec3Size);
+            }
+            typename SIMDTraits::mask_type eq_mask = SIMDTraits::eq(r1, r2);
+            if (eq_mask)
+                out.push_back(L1[i]);
+        }
+
+        // degrade to V1
+        size2_aligned = L2.size() & ~(kVec1Size-1);
+        for (; i < size1; i++) {
+            while (L2[j+kVec1Size-1] < L1[i]) {
+                j += kVec1Size;
+                if (j >= size2_aligned)
+                    return;
+            }
+            typename SIMDTraits::value_type r1 = SIMDTraits::init(L1[i]);
+            typename SIMDTraits::value_type r2 = SIMDTraits::load(L2.data() + j);
+            typename SIMDTraits::mask_type eq_mask = SIMDTraits::eq(r1, r2);
+            if (eq_mask)
+                out.push_back(L1[i]);
+        }
+
+        // handle the remained
+        size_t size2 = L2.size();
+        for (; i < size1; i++) {
+            while (L2[j] < L1[i]) {
+                j++;
+                if (j >= size2)
+                    return;
+            }
+            if (L1[i] == L2[j])
+                out.push_back(L1[i]);
+        }
+    }
+};
+
 typedef void (*IntersectionCallback)(PostingList const &, PostingList const &, PostingList &);
 
 static void printList(const char *desc, PostingList const &list)
@@ -577,10 +649,12 @@ static void benchmarkAll(const char *desc, PostingList const &posting_1, Posting
     IntersectionCallback gallopingIntersection3 = GallopingIntersection<SimpleGallopingSeek>::intersection;
     IntersectionCallback gallopingIntersection4 = GallopingIntersection<GallopingLinearSeek>::intersection;
     IntersectionCallback sse4GallopingIntersection = GeneralIntersection<SIMDGallopingSeeker<SSE4> >::intersection;
-    IntersectionCallback avx2GallopingIntersection = GeneralIntersection<SIMDGallopingSeeker<AVX2> >::intersection;
     IntersectionCallback sse4LinearIntersection = GeneralIntersection<SIMDLinearSeeker<SSE4> >::intersection;
-    IntersectionCallback avx2LinearIntersection = GeneralIntersection<SIMDLinearSeeker<AVX2> >::intersection;
     IntersectionCallback normalLinearIntersection = GeneralIntersection<NormalLinearSeeker>::intersection;
+#ifdef UBITS_AVX2
+    IntersectionCallback avx2GallopingIntersection = GeneralIntersection<SIMDGallopingSeeker<AVX2> >::intersection;
+    IntersectionCallback avx2LinearIntersection = GeneralIntersection<SIMDLinearSeeker<AVX2> >::intersection;
+#endif
 
     printf("\n[%s]\n", desc);
     printf("========\n");
@@ -598,17 +672,29 @@ static void benchmarkAll(const char *desc, PostingList const &posting_1, Posting
     printf("--------\n");
     benchmark("gallop_sse4", posting_1, posting_2, out, sse4GallopingIntersection);
     printf("--------\n");
+#ifdef UBITS_AVX2
     benchmark("gallop_avx2", posting_1, posting_2, out, avx2GallopingIntersection);
     printf("--------\n");
+#endif
     benchmark("lemire_v1_sse4", posting_1, posting_2, out, LemireV1Intersection<SSE4>::intersection);
     printf("--------\n");
+#ifdef UBITS_AVX2
     benchmark("lemire_v1_avx2", posting_1, posting_2, out, LemireV1Intersection<AVX2>::intersection);
     printf("--------\n");
+#endif
+    benchmark("lemire_v3_sse4", posting_1, posting_2, out, LemireV3Intersection<SSE4>::intersection);
+    printf("--------\n");
+#ifdef UBITS_AVX2
+    benchmark("lemire_v3_avx2", posting_1, posting_2, out, LemireV3Intersection<AVX2>::intersection);
+    printf("--------\n");
+#endif
     benchmark("linear_normal", posting_1, posting_2, out, normalLinearIntersection);
     printf("--------\n");
     benchmark("linear_sse4", posting_1, posting_2, out, sse4LinearIntersection);
     printf("--------\n");
+#ifdef UBITS_AVX2
     benchmark("linear_avx2", posting_1, posting_2, out, avx2LinearIntersection);
+#endif
 }
 
 // Generates the following sequence until reaching the limit:
@@ -680,10 +766,12 @@ static void diagramAll(DocId maxId)
     IntersectionCallback gallopingIntersection3 = GallopingIntersection<SimpleGallopingSeek>::intersection;
     IntersectionCallback gallopingIntersection4 = GallopingIntersection<GallopingLinearSeek>::intersection;
     IntersectionCallback sse4GallopingIntersection = GeneralIntersection<SIMDGallopingSeeker<SSE4> >::intersection;
-    IntersectionCallback avx2GallopingIntersection = GeneralIntersection<SIMDGallopingSeeker<AVX2> >::intersection;
     IntersectionCallback sse4LinearIntersection = GeneralIntersection<SIMDLinearSeeker<SSE4> >::intersection;
-    IntersectionCallback avx2LinearIntersection = GeneralIntersection<SIMDLinearSeeker<AVX2> >::intersection;
     IntersectionCallback normalLinearIntersection = GeneralIntersection<NormalLinearSeeker>::intersection;
+#ifdef UBITS_AVX2
+    IntersectionCallback avx2GallopingIntersection = GeneralIntersection<SIMDGallopingSeeker<AVX2> >::intersection;
+    IntersectionCallback avx2LinearIntersection = GeneralIntersection<SIMDLinearSeeker<AVX2> >::intersection;
+#endif
 
     diagram("merge", mergeIntersection, maxId);
     diagram("binary", binarySearchIntersection, maxId);
@@ -692,12 +780,18 @@ static void diagramAll(DocId maxId)
     diagram("gallop3", gallopingIntersection3, maxId);
     diagram("gallop4", gallopingIntersection4, maxId);
     diagram("gallop_sse4", sse4GallopingIntersection, maxId);
+#ifdef UBITS_AVX2
     diagram("gallop_avx2", avx2GallopingIntersection, maxId);
+#endif
     diagram("lemire_v1_sse4", LemireV1Intersection<SSE4>::intersection, maxId);
+#ifdef UBITS_AVX2
     diagram("lemire_v1_avx2", LemireV1Intersection<AVX2>::intersection, maxId);
+#endif
     diagram("linear_normal", normalLinearIntersection, maxId);
     diagram("linear_sse4", sse4LinearIntersection, maxId);
+#ifdef UBITS_AVX2
     diagram("linear_avx2", avx2LinearIntersection, maxId);
+#endif
 }
 
 static void runBenchmarks()
